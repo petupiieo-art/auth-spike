@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Auth spike - Option C</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 760px; margin: 16px auto; padding: 0 12px; }
+  button { margin: 4px 4px 4px 0; padding: 8px 10px; }
+  pre { background: #f4f4f4; padding: 10px; overflow-x: auto; white-space: pre-wrap; word-break: break-word; }
+  #warn { color: #b00020; font-weight: bold; }
+  @media (prefers-color-scheme: dark) { body { background: #111; color: #eee; } pre { background: #222; } }
+</style>
+</head>
+<body>
+<h1>Auth spike (Option C)</h1>
+<p>Throwaway test page. Sign in, then run the tests in the guide, in order.</p>
+<p id="warn"></p>
+
+<div id="signin"></div>
+<pre id="who">Not signed in</pre>
+
+<h3>Normal calls</h3>
+<button onclick="run('whoami')">whoami</button>
+<button onclick="run('myClients')">myClients</button>
+<button onclick="run('allClients')">allClients (admin only)</button><br>
+<input id="cid" placeholder="client ID, e.g. CLI-B1" size="22">
+<button onclick="run('getClient', {clientId: val('cid')})">getClient</button>
+
+<h3>Attack and failure tests</h3>
+<button onclick="forged()">Forged email/role/employeeId</button>
+<button onclick="tampered()">Tampered token</button>
+<button onclick="noToken()">No token</button>
+<button onclick="oldToken()">Replay ORIGINAL token (after 1 hour)</button>
+<button onclick="probe()">GET probe (native identity info)</button>
+
+<h3>Session</h3>
+<button onclick="signOut()">Sign out</button>
+
+<h3>Log (newest first)</h3>
+<pre id="log"></pre>
+
+<script src="config.js"></script>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<script>
+var token = null, firstToken = null;
+var placeholders = /PASTE_/.test(CONFIG.GOOGLE_CLIENT_ID + CONFIG.WEB_APP_URL);
+if (placeholders) document.getElementById('warn').textContent = 'config.js still has placeholder values.';
+
+function val(id) { return document.getElementById(id).value.trim(); }
+function log(msg) { var l = document.getElementById('log'); l.textContent = msg + '\n\n' + l.textContent; }
+function b64(s) { s = s.replace(/-/g, '+').replace(/_/g, '/'); return decodeURIComponent(escape(atob(s))); }
+
+function renderButton() {
+  google.accounts.id.renderButton(document.getElementById('signin'), { theme: 'outline', size: 'large' });
+}
+
+window.onload = function () {
+  google.accounts.id.initialize({ client_id: CONFIG.GOOGLE_CLIENT_ID, callback: onCredential });
+  renderButton();
+};
+
+function onCredential(r) {
+  token = r.credential;
+  if (!firstToken) firstToken = token;
+  var p = JSON.parse(b64(token.split('.')[1]));
+  document.getElementById('who').textContent =
+    'Signed in (display only, the server never trusts this panel)\n' +
+    'email: ' + p.email + '\nsub: ' + p.sub + '\nexpires: ' + new Date(p.exp * 1000).toLocaleTimeString();
+}
+
+function signOut() {
+  token = null; firstToken = null;
+  google.accounts.id.disableAutoSelect();
+  document.getElementById('who').textContent = 'Not signed in';
+  log('Signed out. Use the Google button to pick the other account.');
+}
+
+async function call(label, action, payload, tok, extra) {
+  var t0 = performance.now();
+  try {
+    var res = await fetch(CONFIG.WEB_APP_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' }, // simple request: no CORS preflight
+      body: JSON.stringify(Object.assign({}, extra, { action: action, payload: payload || {}, requestId: crypto.randomUUID(), idToken: tok }))
+    });
+    var j = await res.json();
+    log(label + ' (' + Math.round(performance.now() - t0) + ' ms)\n' + JSON.stringify(j, null, 2));
+  } catch (e) {
+    log(label + ' FAILED to reach backend: ' + e.message + '\n(see Troubleshooting in the guide)');
+  }
+}
+
+function run(action, payload) { call(action, action, payload, token); }
+function forged() {
+  var fake = { role: 'ADMIN', employeeId: 'EMP-B', email: 'someone@example.com' };
+  call('whoami + forged email/role/employeeId (payload AND top level)', 'whoami', fake, token, fake);
+}
+function noToken() { call('whoami, no token', 'whoami', {}, null); }
+function oldToken() { call('whoami, ORIGINAL token', 'whoami', {}, firstToken); }
+function tampered() {
+  if (!token) return log('Sign in first.');
+  var p = token.split('.'), s = p[2];
+  p[2] = s.slice(0, 10) + (s[10] === 'A' ? 'B' : 'A') + s.slice(11); // alter the middle of the signature
+  call('whoami, TAMPERED token', 'whoami', {}, p.join('.'));
+}
+async function probe() {
+  try {
+    var res = await fetch(CONFIG.WEB_APP_URL);
+    log('GET probe\n' + JSON.stringify(await res.json(), null, 2));
+  } catch (e) { log('GET probe FAILED: ' + e.message); }
+}
+</script>
+</body>
+</html>
